@@ -1,10 +1,21 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { nodePolyfills } from 'vite-plugin-node-polyfills';
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react()],
-  optimizeDeps: {
-    exclude: ['lucide-react'],
+  plugins: [
+    react(),
+    nodePolyfills({
+      // Whether to polyfill specific globals
+      globals: {
+        Buffer: true,
+      },
+    }),
+  ],
+  resolve: {
+    alias: {
+      // Add any aliases you need
+    },
   },
 });

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { signInWithEmailAndPassword } from 'firebase/auth';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, GraduationCap, Eye, EyeOff } from 'lucide-react';
 import { auth } from '../../config/firebase';
 import toast from 'react-hot-toast';
@@ -11,6 +11,7 @@ const Login: React.FC = () => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -23,6 +24,7 @@ const Login: React.FC = () => {
     try {
       await signInWithEmailAndPassword(auth, email, password);
       toast.success('Welcome back!');
+      navigate('/');
     } catch (error: any) {
       toast.error(error.message || 'Login failed');
     } finally {

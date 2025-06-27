@@ -1,11 +1,22 @@
 import React, { useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { Upload, X, File, Image, FileText, AlertCircle } from 'lucide-react';
-import { uploadToCloudinary, CloudinaryUploadResult } from '../../config/cloudinary';
 import toast from 'react-hot-toast';
+import { uploadFile as uploadToDrive } from '../../services/googleDrive';
+
+// Rename interface to match Google Drive terminology
+export interface FileUploadResult {
+  public_id: string;      // File ID in Google Drive
+  secure_url: string;     // View URL
+  original_filename: string;
+  bytes: number;
+  format: string;
+  resource_type: string;
+  created_at?: string;
+}
 
 interface FileUploadProps {
-  onFileUploaded: (result: CloudinaryUploadResult) => void;
+  onFileUploaded: (result: FileUploadResult) => void;
   acceptedTypes?: string[];
   maxSizeMB?: number;
   folder?: string;
@@ -17,7 +28,7 @@ interface UploadingFile {
   file: File;
   progress: number;
   status: 'uploading' | 'completed' | 'error';
-  result?: CloudinaryUploadResult;
+  result?: FileUploadResult;
   error?: string;
 }
 
@@ -25,7 +36,7 @@ const FileUpload: React.FC<FileUploadProps> = ({
   onFileUploaded,
   acceptedTypes = ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.txt', '.jpg', '.jpeg', '.png'],
   maxSizeMB = 10,
-  folder = 'campus-companion',
+  folder = 'notes',  // Default to notes folder
   multiple = false,
   className = ''
 }) => {
@@ -86,7 +97,8 @@ const FileUpload: React.FC<FileUploadProps> = ({
         );
       }, 200);
 
-      const result = await uploadToCloudinary(file, folder);
+      // Use Google Drive upload instead of Cloudinary
+      const result = await uploadToDrive(file, folder);
 
       clearInterval(progressInterval);
 

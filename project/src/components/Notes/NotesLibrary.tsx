@@ -14,11 +14,12 @@ import {
   XCircle,
   FileText
 } from 'lucide-react';
-import { collection, getDocs, query, where, orderBy, updateDoc, doc, limit } from 'firebase/firestore';
+import { collection, getDocs, query, where, orderBy, updateDoc, doc } from 'firebase/firestore';
 import { db } from '../../config/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { Note } from '../../types';
 import toast from 'react-hot-toast';
+
 
 interface FilterOptions {
   subjectCode: string;
@@ -39,14 +40,36 @@ const NotesLibrary: React.FC = () => {
     tags: '',
     sortBy: 'newest'
   });
+  const [subjects, setSubjects] = useState<{code: string, name: string}[]>([]);
 
+  // Fetch notes when component mounts or user changes
   useEffect(() => {
     fetchNotes();
+    fetchSubjects();
   }, [userProfile]);
 
+  // Apply filters when notes, search term, or filters change
   useEffect(() => {
     applyFilters();
   }, [notes, searchTerm, filters]);
+
+  const fetchSubjects = async () => {
+    try {
+      const subjectsRef = collection(db, 'subjects');
+      const snapshot = await getDocs(subjectsRef);
+      const subjectsList: {code: string, name: string}[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        subjectsList.push({
+          code: data.code,
+          name: data.name
+        });
+      });
+      setSubjects(subjectsList);
+    } catch (error) {
+      console.error('Error fetching subjects:', error);
+    }
+  };
 
   const fetchNotes = async () => {
     if (!userProfile) return;
@@ -54,163 +77,115 @@ const NotesLibrary: React.FC = () => {
     setLoading(true);
     try {
       const notesRef = collection(db, 'notes');
-      const notesData: Note[] = [];
-
-      if (userProfile.role === 'admin') {
-        // Admin can see all notes - Simple query without composite index
-        try {
-          const allNotesQuery = query(notesRef, limit(100)); // Add limit to prevent large data loads
-          const snapshot = await getDocs(allNotesQuery);
-          
-          snapshot.forEach((doc) => {
-            const data = doc.data();
-            if (data.createdAt) { // Ensure createdAt exists
-              notesData.push({
-                id: doc.id,
-                title: data.title || 'Untitled',
-                description: data.description || '',
-                subjectCode: data.subjectCode || 'Unknown',
-                fileUrl: data.fileUrl || '',
-                fileName: data.fileName || 'Unknown',
-                fileSize: data.fileSize || 0,
-                uploadedBy: data.uploadedBy || '',
-                uploaderName: data.uploaderName || 'Unknown',
-                subclassId: data.subclassId || '',
-                isShared: data.isShared || false,
-                tags: data.tags || [],
-                downloads: data.downloads || 0,
-                approved: data.approved !== undefined ? data.approved : true,
-                createdAt: data.createdAt?.toDate() || new Date()
-              });
-            }
-          });
-        } catch (adminError) {
-          console.error('Admin query failed:', adminError);
-          toast.error('Failed to load admin notes');
+      let notesData: Note[] = [];
+      
+      // Simple approach - get all notes first, then filter in memory
+      // This avoids complex Firestore query issues
+      const snapshot = await getDocs(notesRef);
+      
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        
+        // Make sure all fields exist to prevent errors
+        const note: Note = {
+          id: doc.id,
+          title: data.title || 'Untitled',
+          description: data.description || '',
+          subjectCode: data.subjectCode || '',
+          fileUrl: data.fileUrl || '',
+          fileName: data.fileName || '',
+          fileSize: data.fileSize || 0,
+          uploadedBy: data.uploadedBy || '',
+          uploaderName: data.uploaderName || '',
+          subclassId: data.subclassId || '',
+          isShared: data.isShared || false,
+          tags: data.tags || [],
+          downloads: data.downloads || 0,
+          approved: data.approved !== undefined ? data.approved : true,
+          createdAt: data.createdAt?.toDate() || new Date()
+        };
+        
+        // Only add notes that should be visible to this user:
+        // 1. Notes from user's own subclass
+        // 2. Notes that are shared
+        // 3. All notes if user is admin
+        if (
+          userProfile.role === 'admin' || 
+          note.subclassId === userProfile.subclass || 
+          note.isShared
+        ) {
+          notesData.push(note);
         }
-      } else {
-        // For students and CRs - Use simpler queries
-        try {
-          // Step 1: Get notes from user's own subclass
-          const ownSubclassQuery = query(
-            notesRef,
-            where('subclassId', '==', userProfile.subclass),
-            limit(50)
-          );
-          const ownSnapshot = await getDocs(ownSubclassQuery);
-          
-          ownSnapshot.forEach((doc) => {
-            const data = doc.data();
-            if (data.createdAt) { // Ensure createdAt exists
-              notesData.push({
-                id: doc.id,
-                title: data.title || 'Untitled',
-                description: data.description || '',
-                subjectCode: data.subjectCode || 'Unknown',
-                fileUrl: data.fileUrl || '',
-                fileName: data.fileName || 'Unknown',
-                fileSize: data.fileSize || 0,
-                uploadedBy: data.uploadedBy || '',
-                uploaderName: data.uploaderName || 'Unknown',
-                subclassId: data.subclassId || '',
-                isShared: data.isShared || false,
-                tags: data.tags || [],
-                downloads: data.downloads || 0,
-                approved: data.approved !== undefined ? data.approved : true,
-                createdAt: data.createdAt?.toDate() || new Date()
-              });
-            }
-          });
-
-          // Step 2: Get shared notes from other subclasses
-          const sharedNotesQuery = query(
-            notesRef,
-            where('isShared', '==', true),
-            limit(50)
-          );
-          const sharedSnapshot = await getDocs(sharedNotesQuery);
-          
-          sharedSnapshot.forEach((doc) => {
-            const data = doc.data();
-            // Only add if not already included from own subclass and has required data
-            if (!notesData.find(note => note.id === doc.id) && data.createdAt) {
-              notesData.push({
-                id: doc.id,
-                title: data.title || 'Untitled',
-                description: data.description || '',
-                subjectCode: data.subjectCode || 'Unknown',
-                fileUrl: data.fileUrl || '',
-                fileName: data.fileName || 'Unknown',
-                fileSize: data.fileSize || 0,
-                uploadedBy: data.uploadedBy || '',
-                uploaderName: data.uploaderName || 'Unknown',
-                subclassId: data.subclassId || '',
-                isShared: data.isShared || false,
-                tags: data.tags || [],
-                downloads: data.downloads || 0,
-                approved: data.approved !== undefined ? data.approved : true,
-                createdAt: data.createdAt?.toDate() || new Date()
-              });
-            }
-          });
-        } catch (studentError) {
-          console.error('Student query failed:', studentError);
-          toast.error('Failed to load student notes');
-        }
-      }
-
-      // Sort by creation date (newest first) since we can't rely on Firestore ordering
+      });
+      
+      // Sort by creation date (newest first)
       notesData.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
       
-      setNotes(notesData);
       console.log(`Loaded ${notesData.length} notes successfully`);
+      setNotes(notesData);
+      
+      // Debugging: Log note URLs
+      if (notesData.length > 0) {
+        debugNotesUrls(notesData);
+      }
       
     } catch (error) {
       console.error('Error fetching notes:', error);
-      toast.error('Failed to load notes. Please try refreshing the page.');
+      toast.error('Failed to load notes. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
+  // Debugging function to log note URLs
+  const debugNotesUrls = (notes: Note[]) => {
+    console.log("=== DEBUG: Notes URLs ===");
+    notes.forEach((note, index) => {
+      console.log(`Note ${index + 1}: ${note.title}`);
+      console.log(`- fileUrl: ${note.fileUrl}`);
+      console.log(`- driveFileId: ${note.driveFileId || 'not set'}`);
+      console.log(`- viewUrl: ${note.viewUrl || 'not set'}`);
+      console.log(`- downloadUrl: ${note.downloadUrl || 'not set'}`);
+      console.log(`- File extension: ${note.fileName.split('.').pop()}`);
+      console.log("---");
+    });
+  };
+
   const applyFilters = () => {
     let filtered = [...notes];
-
-    // Only show approved notes for non-admins
-    if (userProfile?.role !== 'admin') {
-      filtered = filtered.filter(note => note.approved);
-    }
-
-    // Search filter
+    
+    // Filter by search term
     if (searchTerm) {
-      filtered = filtered.filter(note =>
-        note.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        note.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        note.subjectCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        note.tags.some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()))
+      const searchLower = searchTerm.toLowerCase();
+      filtered = filtered.filter(note => 
+        note.title.toLowerCase().includes(searchLower) ||
+        note.description.toLowerCase().includes(searchLower) ||
+        note.subjectCode.toLowerCase().includes(searchLower) ||
+        note.tags.some(tag => tag.toLowerCase().includes(searchLower))
       );
     }
-
-    // Subject filter
+    
+    // Filter by subject code
     if (filters.subjectCode) {
       filtered = filtered.filter(note => note.subjectCode === filters.subjectCode);
     }
-
-    // Sharing filter
+    
+    // Filter by sharing status
     if (filters.isShared !== 'all') {
       filtered = filtered.filter(note => 
         filters.isShared === 'shared' ? note.isShared : !note.isShared
       );
     }
-
-    // Tags filter
+    
+    // Filter by tags
     if (filters.tags) {
+      const tagsLower = filters.tags.toLowerCase();
       filtered = filtered.filter(note =>
-        note.tags.some(tag => tag.toLowerCase().includes(filters.tags.toLowerCase()))
+        note.tags.some(tag => tag.toLowerCase().includes(tagsLower))
       );
     }
-
-    // Sort
+    
+    // Apply sorting
     filtered.sort((a, b) => {
       switch (filters.sortBy) {
         case 'oldest':
@@ -224,14 +199,30 @@ const NotesLibrary: React.FC = () => {
           return b.createdAt.getTime() - a.createdAt.getTime();
       }
     });
-
+    
     setFilteredNotes(filtered);
   };
 
   const handleDownload = async (note: Note) => {
     try {
-      // Open file in new tab
-      window.open(note.fileUrl, '_blank');
+      let downloadUrl = '';
+      
+      // For Google Drive files
+      if (note.driveFileId) {
+        downloadUrl = note.downloadUrl || `https://drive.google.com/uc?export=download&id=${note.driveFileId}`;
+      }
+      // Legacy files (not from Google Drive)
+      else {
+        downloadUrl = note.fileUrl;
+      }
+      
+      // Create a temporary anchor to trigger download
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = note.fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
       
       // Update download count
       await updateDoc(doc(db, 'notes', note.id), {
@@ -239,14 +230,25 @@ const NotesLibrary: React.FC = () => {
       });
       
       // Update local state
-      setNotes(prev => prev.map(n => 
+      setNotes(prevNotes => prevNotes.map(n => 
         n.id === note.id ? { ...n, downloads: n.downloads + 1 } : n
       ));
       
-      toast.success('File opened successfully!');
+      toast.success('Downloading file...');
     } catch (error) {
       console.error('Error downloading file:', error);
-      toast.error('Failed to open file');
+      toast.error('Failed to download file. Please try again.');
+    }
+  };
+
+  const handlePreview = (note: Note) => {
+    // Handle Google Drive files
+    if (note.driveFileId) {
+      const embedUrl = note.viewUrl || `https://drive.google.com/file/d/${note.driveFileId}/preview`;
+      window.open(embedUrl, '_blank');
+    } else {
+      // Legacy files
+      window.open(note.fileUrl, '_blank');
     }
   };
 
@@ -263,6 +265,48 @@ const NotesLibrary: React.FC = () => {
     }
   };
 
+  const handleFileAccess = async (note: Note) => {
+    try {
+      console.log("Accessing file:", note);
+      
+      // Check if this is a Google Drive file
+      if (note.driveFileId) {
+        console.log("Using Google Drive file access");
+        // Use the stored URLs if available, otherwise construct them
+        if (note.viewUrl) {
+          window.open(note.viewUrl, '_blank');
+        } else {
+          const embedUrl = `https://drive.google.com/file/d/${note.driveFileId}/preview`;
+          window.open(embedUrl, '_blank');
+        }
+      } 
+      // Legacy files (not from Google Drive)
+      else {
+        console.log("Using direct file URL:", note.fileUrl);
+        window.open(note.fileUrl, '_blank');
+      }
+      
+      // Update download count in Firestore
+      try {
+        await updateDoc(doc(db, 'notes', note.id), {
+          downloads: note.downloads + 1
+        });
+        
+        // Update local state
+        setNotes(prevNotes => prevNotes.map(n => 
+          n.id === note.id ? { ...n, downloads: n.downloads + 1 } : n
+        ));
+      } catch (updateError) {
+        console.error("Failed to update download count:", updateError);
+      }
+      
+      toast.success('Opening file...');
+    } catch (error) {
+      console.error('Error accessing file:', error);
+      toast.error('Failed to access file. Please try again.');
+    }
+  };
+
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -270,19 +314,36 @@ const NotesLibrary: React.FC = () => {
   };
 
   const getUniqueSubjects = () => {
-    const subjects = [...new Set(notes.map(note => note.subjectCode))];
-    return subjects.sort();
+    // Return unique subject codes from notes
+    const subjectCodes = [...new Set(notes.map(note => note.subjectCode))];
+    return subjectCodes.sort();
+  };
+
+  const getSubjectName = (code: string) => {
+    const subject = subjects.find(s => s.code === code);
+    return subject ? subject.name : code;
   };
 
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <motion.div
-          animate={{ rotate: 360 }}
-          transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-          className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full"
-        />
-        <div className="ml-4">
+        <div className="flex flex-col items-center">
+          {/* Subtle pulse animation instead of continuous rotation */}
+          <motion.div
+            animate={{ 
+              scale: [1, 1.05, 1],
+              opacity: [0.7, 1, 0.7]
+            }}
+            transition={{ 
+              duration: 2, 
+              repeat: Infinity, 
+              repeatType: "reverse", 
+              ease: "easeInOut" 
+            }}
+            className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-4"
+          >
+            <BookOpen className="w-8 h-8 text-blue-600" />
+          </motion.div>
           <p className="text-lg font-medium text-gray-700">Loading notes...</p>
           <p className="text-sm text-gray-500">Please wait while we fetch your study materials</p>
         </div>
@@ -315,8 +376,8 @@ const NotesLibrary: React.FC = () => {
         </div>
       </motion.div>
 
-      {/* Debug Info (Remove in production) */}
-      {process.env.NODE_ENV === 'development' && (
+      {/* Debug Info */}
+      {process.env.NODE_ENV !== 'production' && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
           <p className="text-sm text-yellow-800">
             Debug: Total notes loaded: {notes.length} | Filtered: {filteredNotes.length} | 
@@ -353,7 +414,9 @@ const NotesLibrary: React.FC = () => {
           >
             <option value="">All Subjects</option>
             {getUniqueSubjects().map(subject => (
-              <option key={subject} value={subject}>{subject}</option>
+              <option key={subject} value={subject}>
+                {subject} - {getSubjectName(subject)}
+              </option>
             ))}
           </select>
 
@@ -392,142 +455,150 @@ const NotesLibrary: React.FC = () => {
       </motion.div>
 
       {/* Notes Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {filteredNotes.map((note, index) => (
-          <motion.div
-            key={note.id}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: index * 0.05 }}
-            className="bg-white rounded-xl p-6 shadow-sm hover:shadow-md transition-shadow duration-200"
-          >
-            {/* Note Header */}
-            <div className="flex items-start justify-between mb-4">
-              <div className="flex items-center space-x-3">
-                <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
-                  <FileText className="w-5 h-5 text-blue-600" />
+      {filteredNotes.length > 0 ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {filteredNotes.map((note, index) => (
+            <motion.div
+              key={note.id}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.05 }}
+              className="bg-white rounded-xl p-6 shadow-sm hover:shadow-md transition-shadow duration-200"
+            >
+              {/* Note Header */}
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+                    <FileText className="w-5 h-5 text-blue-600" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="font-semibold text-gray-800 line-clamp-1">{note.title}</h3>
+                    <p className="text-sm text-blue-600">{note.subjectCode}</p>
+                    {note.subclassId !== userProfile?.subclass && (
+                      <p className="text-xs text-gray-500">from {note.subclassId}</p>
+                    )}
+                  </div>
                 </div>
-                <div className="flex-1">
-                  <h3 className="font-semibold text-gray-800 line-clamp-1">{note.title}</h3>
-                  <p className="text-sm text-blue-600">{note.subjectCode}</p>
-                  {/* Show subclass if different from user's subclass */}
+                <div className="flex flex-col items-end space-y-1">
+                  {note.isShared && (
+                    <div className="flex items-center space-x-1">
+                      <Share2 className="w-4 h-4 text-green-500" />
+                      <span className="text-xs text-green-600">Shared</span>
+                    </div>
+                  )}
                   {note.subclassId !== userProfile?.subclass && (
-                    <p className="text-xs text-gray-500">from {note.subclassId}</p>
+                    <div className="flex items-center space-x-1">
+                      <User className="w-4 h-4 text-purple-500" />
+                      <span className="text-xs text-purple-600">Cross-Dept</span>
+                    </div>
                   )}
                 </div>
               </div>
-              <div className="flex flex-col items-end space-y-1">
-                {note.isShared && (
-                  <div className="flex items-center space-x-1">
-                    <Share2 className="w-4 h-4 text-green-500" />
-                    <span className="text-xs text-green-600">Shared</span>
-                  </div>
-                )}
-                {note.subclassId !== userProfile?.subclass && (
-                  <div className="flex items-center space-x-1">
-                    <User className="w-4 h-4 text-purple-500" />
-                    <span className="text-xs text-purple-600">Cross-Dept</span>
-                  </div>
-                )}
-              </div>
-            </div>
 
-            {/* Description */}
-            {note.description && (
-              <p className="text-sm text-gray-600 mb-4 line-clamp-2">{note.description}</p>
-            )}
+              {/* Description */}
+              {note.description && (
+                <p className="text-sm text-gray-600 mb-4 line-clamp-2">{note.description}</p>
+              )}
 
-            {/* Tags */}
-            {note.tags.length > 0 && (
-              <div className="flex flex-wrap gap-1 mb-4">
-                {note.tags.slice(0, 3).map((tag, tagIndex) => (
-                  <span
-                    key={tagIndex}
-                    className="px-2 py-1 bg-gray-100 text-xs text-gray-600 rounded-full"
-                  >
-                    {tag}
-                  </span>
-                ))}
-                {note.tags.length > 3 && (
-                  <span className="px-2 py-1 bg-gray-100 text-xs text-gray-600 rounded-full">
-                    +{note.tags.length - 3}
-                  </span>
-                )}
-              </div>
-            )}
-
-            {/* File Info */}
-            <div className="flex items-center justify-between text-sm text-gray-500 mb-4">
-              <span>{formatFileSize(note.fileSize)}</span>
-              <span>{note.downloads} downloads</span>
-            </div>
-
-            {/* Footer */}
-            <div className="flex items-center justify-between pt-4 border-t border-gray-100">
-              <div className="flex items-center space-x-2">
-                <User className="w-4 h-4 text-gray-400" />
-                <span className="text-sm text-gray-600">{note.uploaderName}</span>
-              </div>
-              <div className="flex items-center space-x-2">
-                <Clock className="w-4 h-4 text-gray-400" />
-                <span className="text-sm text-gray-600">
-                  {note.createdAt.toLocaleDateString()}
-                </span>
-              </div>
-            </div>
-
-            {/* Actions */}
-            <div className="flex items-center justify-between mt-4 pt-4 border-t border-gray-100">
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => handleDownload(note)}
-                className="flex items-center space-x-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-              >
-                <Download className="w-4 h-4" />
-                <span>Download</span>
-              </motion.button>
-
-              {/* CR/Admin Approval Actions */}
-              {(userProfile?.role === 'cr' || userProfile?.role === 'admin') && (
-                <div className="flex items-center space-x-2">
-                  {note.approved ? (
-                    <motion.button
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      onClick={() => handleApproval(note.id, false)}
-                      className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-                      title="Reject Note"
+              {/* Tags */}
+              {note.tags && note.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1 mb-4">
+                  {note.tags.slice(0, 3).map((tag, tagIndex) => (
+                    <span
+                      key={tagIndex}
+                      className="px-2 py-1 bg-gray-100 text-xs text-gray-600 rounded-full"
                     >
-                      <XCircle className="w-4 h-4" />
-                    </motion.button>
-                  ) : (
-                    <motion.button
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      onClick={() => handleApproval(note.id, true)}
-                      className="p-2 text-green-500 hover:bg-green-50 rounded-lg transition-colors"
-                      title="Approve Note"
-                    >
-                      <CheckCircle className="w-4 h-4" />
-                    </motion.button>
+                      {tag}
+                    </span>
+                  ))}
+                  {note.tags.length > 3 && (
+                    <span className="px-2 py-1 bg-gray-100 text-xs text-gray-600 rounded-full">
+                      +{note.tags.length - 3}
+                    </span>
                   )}
                 </div>
               )}
-            </div>
 
-            {/* Approval Status */}
-            {!note.approved && (userProfile?.role === 'admin' || userProfile?.role === 'cr') && (
-              <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <p className="text-xs text-yellow-700">Pending approval</p>
+              {/* File Info */}
+              <div className="flex items-center justify-between text-sm text-gray-500 mb-4">
+                <span>{formatFileSize(note.fileSize)}</span>
+                <span>{note.downloads} downloads</span>
               </div>
-            )}
-          </motion.div>
-        ))}
-      </div>
 
-      {/* No Results */}
-      {filteredNotes.length === 0 && !loading && (
+              {/* Footer */}
+              <div className="flex items-center justify-between pt-4 border-t border-gray-100">
+                <div className="flex items-center space-x-2">
+                  <User className="w-4 h-4 text-gray-400" />
+                  <span className="text-sm text-gray-600">{note.uploaderName}</span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Clock className="w-4 h-4 text-gray-400" />
+                  <span className="text-sm text-gray-600">
+                    {note.createdAt.toLocaleDateString()}
+                  </span>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center justify-between mt-4 pt-4 border-t border-gray-100">
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => handleFileAccess(note)}
+                  className="flex items-center space-x-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                >
+                  <Eye className="w-4 h-4" />
+                  <span>View</span>
+                </motion.button>
+
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => handleDownload(note)}
+                  className="flex items-center space-x-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Download</span>
+                </motion.button>
+                
+                {/* Admin/CR Approval Actions */}
+                {(userProfile?.role === 'admin' || userProfile?.role === 'cr') && (
+                  <div className="flex items-center space-x-2">
+                    {note.approved ? (
+                      <motion.button
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={() => handleApproval(note.id, false)}
+                        className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                        title="Reject Note"
+                      >
+                        <XCircle className="w-4 h-4" />
+                      </motion.button>
+                    ) : (
+                      <motion.button
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={() => handleApproval(note.id, true)}
+                        className="p-2 text-green-500 hover:bg-green-50 rounded-lg transition-colors"
+                        title="Approve Note"
+                      >
+                        <CheckCircle className="w-4 h-4" />
+                      </motion.button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Approval Status */}
+              {!note.approved && (userProfile?.role === 'admin' || userProfile?.role === 'cr') && (
+                <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded-lg">
+                  <p className="text-xs text-yellow-700">Pending approval</p>
+                </div>
+              )}
+            </motion.div>
+          ))}
+        </div>
+      ) : (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -540,16 +611,12 @@ const NotesLibrary: React.FC = () => {
               ? 'Try adjusting your search filters'
               : 'No notes have been uploaded yet'}
           </p>
-          {notes.length === 0 && (
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={fetchNotes}
-              className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-            >
-              Refresh Notes
-            </motion.button>
-          )}
+          <button
+            onClick={fetchNotes}
+            className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+          >
+            Refresh Notes
+          </button>
         </motion.div>
       )}
     </div>

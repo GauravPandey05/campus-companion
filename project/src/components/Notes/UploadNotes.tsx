@@ -1,45 +1,94 @@
 import React, { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
-import { Upload, BookOpen, Share2, Tag, User } from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
+import { useSubjects } from '../../hooks/useSubjects';
 import { collection, addDoc } from 'firebase/firestore';
 import { db } from '../../config/firebase';
-import { useAuth } from '../../contexts/AuthContext';
-import { CloudinaryUploadResult } from '../../config/cloudinary';
-import { useSubjects } from '../../hooks/useSubjects';
-import FileUpload from '../Upload/FileUpload';
-import toast from 'react-hot-toast';
+import { toast } from 'react-hot-toast';
+import { Upload, Check, X, FileText } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { uploadFile } from '../../services/googleDrive';
+import { FileUploadResult } from '../Upload/FileUpload';
+
+interface FormFields {
+  title: string;
+  description: string;
+  subjectCode: string;
+  isShared: boolean;
+  tags: string;
+}
 
 const UploadNotes: React.FC = () => {
   const { userProfile } = useAuth();
   const { subjects, loading: subjectsLoading } = useSubjects(userProfile?.department);
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<FormFields>({
     title: '',
     description: '',
     subjectCode: '',
     isShared: false,
     tags: ''
   });
-  const [uploadedFile, setUploadedFile] = useState<CloudinaryUploadResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadedFile, setUploadedFile] = useState<FileUploadResult | null>(null);
+  const [dragActive, setDragActive] = useState(false);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-    const { name, value, type } = e.target;
-    if (type === 'checkbox') {
-      const checked = (e.target as HTMLInputElement).checked;
-      setFormData(prev => ({ ...prev, [name]: checked }));
-    } else {
-      setFormData(prev => ({ ...prev, [name]: value }));
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [name]: value
+    }));
+  };
+
+  const handleCheckboxChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, checked } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [name]: checked
+    }));
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      await handleFileUpload(file);
     }
   };
 
-  const handleFileUploaded = (result: CloudinaryUploadResult) => {
-    setUploadedFile(result);
-    // Auto-fill title if not already filled
-    if (!formData.title && result.original_filename) {
-      setFormData(prev => ({
-        ...prev,
-        title: result.original_filename.replace(/\.[^/.]+$/, '') // Remove extension
-      }));
+  const handleDrag = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    if (e.type === 'dragenter' || e.type === 'dragover') {
+      setDragActive(true);
+    } else if (e.type === 'dragleave') {
+      setDragActive(false);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      const file = e.dataTransfer.files[0];
+      await handleFileUpload(file);
+    }
+  };
+
+  const handleFileUpload = async (file: File) => {
+    setUploading(true);
+    try {
+      // Upload to Google Drive instead of Cloudinary
+      const uploadResult = await uploadFile(file, 'notes');
+      setUploadedFile(uploadResult);
+      toast.success('File uploaded successfully!');
+    } catch (error) {
+      console.error('Upload error:', error);
+      toast.error('Failed to upload file. Please try again.');
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -56,25 +105,44 @@ const UploadNotes: React.FC = () => {
       return;
     }
 
+    // Add debug logging to see what we have
+    console.log('Current user profile:', userProfile);
+
+    // Check for user and required fields
+    if (!userProfile) {
+      toast.error('You must be logged in to upload notes');
+      return;
+    }
+
     setLoading(true);
     try {
+      // Get user ID from either uid or id property
+      const userId = userProfile.id;
+      
+      if (!userId) {
+        throw new Error('User ID not available - please log out and log in again');
+      }
+      
       const noteData = {
         title: formData.title,
         description: formData.description,
         subjectCode: formData.subjectCode,
-        fileUrl: uploadedFile.secure_url,
+        fileUrl: uploadedFile.secure_url,        // Google Drive webViewLink
         fileName: uploadedFile.original_filename,
         fileSize: uploadedFile.bytes,
-        uploadedBy: userProfile!.id,
-        uploaderName: userProfile!.name,
-        subclassId: userProfile!.subclass || '',
+        uploadedBy: userId,
+        uploaderName: userProfile.name || 'Anonymous',
+        driveFileId: uploadedFile.public_id,     // Store Google Drive fileId
+        viewUrl: `https://drive.google.com/file/d/${uploadedFile.public_id}/preview`,
+        downloadUrl: `https://drive.google.com/uc?export=download&id=${uploadedFile.public_id}`,
+        subclassId: userProfile.subclass || '',
         isShared: formData.isShared,
-        tags: formData.tags.split(',').map(tag => tag.trim()).filter(tag => tag),
+        tags: formData.tags ? formData.tags.split(',').map(tag => tag.trim()) : [],
         downloads: 0,
-        approved: userProfile!.role === 'admin' ? true : false, // Auto-approve for admins
+        approved: userProfile.role === 'admin' || userProfile.role === 'cr',
         createdAt: new Date()
       };
-
+      
       await addDoc(collection(db, 'notes'), noteData);
       
       toast.success('Notes uploaded successfully!');
@@ -140,12 +208,55 @@ const UploadNotes: React.FC = () => {
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Upload File
               </label>
-              <FileUpload
-                onFileUploaded={handleFileUploaded}
-                acceptedTypes={['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.txt']}
-                maxSizeMB={25}
-                folder="notes"
-              />
+              <div
+                className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg transition-all duration-200 ${
+                  dragActive
+                    ? 'border-green-500 bg-green-50'
+                    : 'border-gray-300 bg-white'
+                }`}
+                onDragEnter={handleDrag}
+                onDragOver={handleDrag}
+                onDragLeave={handleDrag}
+                onDrop={handleDrop}
+              >
+                <input
+                  type="file"
+                  accept=".pdf,.doc,.docx,.ppt,.pptx,.txt"
+                  onChange={handleFileChange}
+                  className="hidden"
+                  id="file-upload"
+                />
+                <label
+                  htmlFor="file-upload"
+                  className="flex flex-col items-center cursor-pointer"
+                >
+                  {uploadedFile ? (
+                    <div className="flex items-center space-x-2">
+                      <Check className="w-5 h-5 text-green-600" />
+                      <span className="text-sm text-gray-700 font-medium">
+                        {uploadedFile.original_filename}
+                      </span>
+                    </div>
+                  ) : (
+                    <>
+                      <Upload className="w-8 h-8 text-green-500" />
+                      <span className="text-sm text-gray-500">
+                        Drag and drop your file here, or click to select
+                      </span>
+                    </>
+                  )}
+                </label>
+                {uploadedFile && (
+                  <button
+                    type="button"
+                    onClick={() => setUploadedFile(null)}
+                    className="mt-2 text-sm text-red-500 hover:underline"
+                  >
+                    <X className="w-4 h-4 inline-block mr-1" />
+                    Remove file
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Title */}
@@ -237,7 +348,7 @@ const UploadNotes: React.FC = () => {
                 id="isShared"
                 name="isShared"
                 checked={formData.isShared}
-                onChange={handleChange}
+                onChange={handleCheckboxChange}
                 className="w-4 h-4 text-green-600 border-gray-300 rounded focus:ring-green-500"
               />
               <label htmlFor="isShared" className="text-sm font-medium text-gray-700">
@@ -302,7 +413,7 @@ const UploadNotes: React.FC = () => {
               <div className="space-y-2">
                 <div className="flex items-center space-x-3">
                   <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
-                    <BookOpen className="w-5 h-5 text-green-600" />
+                    <FileText className="w-5 h-5 text-green-600" />
                   </div>
                   <div className="flex-1">
                     <p className="font-medium text-gray-800">{uploadedFile.original_filename}</p>

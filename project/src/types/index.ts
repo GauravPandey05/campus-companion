@@ -1,9 +1,10 @@
 export interface User {
-  id: string;
-  email: string;
+  id: string; // Changed from optional to required
+  uid?: string; // Add this line
   name: string;
+  email: string;
   role: 'student' | 'cr' | 'admin';
-  department?: string;
+  department: string;
   subclass?: string;
   avatar?: string;
   createdAt: Date;
@@ -13,6 +14,7 @@ export interface Department {
   id: string;
   name: string;
   code: string;
+  subclasses?: string[]; // Added
   createdAt: Date;
 }
 
@@ -22,6 +24,7 @@ export interface Subclass {
   department: string;
   year: number;
   semester: number;
+  capacity?: number; // Added
   crId?: string;
   createdAt: Date;
 }
@@ -30,13 +33,14 @@ export interface Subject {
   id: string;
   name: string;
   code: string;
-  departmentId: string;
+  department: string; // Changed from departmentId
   year: number;
   semester: number;
   isShared: boolean;
+  sharedWith?: string[]; // Added
   credits: number;
   createdAt: Date;
-  description?: string; // Optional field for subject description
+  description?: string;
 }
 
 export interface Assignment {
@@ -59,15 +63,20 @@ export interface Note {
   subjectCode: string;
   fileUrl: string;
   fileName: string;
-  fileSize: number;
+  fileSize: number; // Note: Stored as string in Firebase, convert when reading
   uploadedBy: string;
   uploaderName: string;
   subclassId: string;
   isShared: boolean;
   tags: string[];
   downloads: number;
-  approved: boolean; // Make this required instead of optional
+  approved: boolean;
   createdAt: Date;
+  
+  // Google Drive support
+  driveFileId?: string;
+  viewUrl?: string;
+  downloadUrl?: string;
 }
 
 export interface TimetableSlot {
@@ -81,6 +90,7 @@ export interface TimetableSlot {
   endTime: string;
   subclassId: string;
   type: 'lecture' | 'lab' | 'tutorial';
+  createdAt?: Date; // Added to be consistent with other types
 }
 
 export interface DiscussionThread {

@@ -1,125 +1,120 @@
 import { useState, useEffect } from 'react';
-import { collection, getDocs, query, where, orderBy } from 'firebase/firestore';
+import { collection, getDocs, query, where, or, orderBy } from 'firebase/firestore';
 import { db } from '../config/firebase';
-import { Subject } from '../types';
 
-export const useSubjects = (department?: string, year?: number) => {
+export interface Subject {
+  id: string;
+  code: string;
+  name: string;
+  department: string;
+  year: number;
+  semester: number;
+  credits: number;
+  isShared?: boolean;
+  sharedWith?: string[];
+  description?: string;
+}
+
+export function useSubjects(department?: string) {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchSubjects();
-  }, [department, year]);
+    const fetchSubjects = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const subjectsRef = collection(db, 'subjects');
+        let subjectsData: Subject[] = [];
 
-  const fetchSubjects = async () => {
-    setLoading(true);
-    setError(null);
-    
-    try {
-      const subjectsRef = collection(db, 'subjects');
-      let subjectsQuery = query(subjectsRef, orderBy('year'), orderBy('semester'), orderBy('name'));
-
-      // If department is specified, filter by department or shared subjects
-      if (department) {
-        // Get department-specific subjects
-        const deptQuery = query(
-          subjectsRef,
-          where('department', '==', department),
-          orderBy('year'),
-          orderBy('semester')
-        );
-        const deptSnapshot = await getDocs(deptQuery);
-
-        // Get shared subjects that include this department
-        const sharedQuery = query(
-          subjectsRef,
-          where('isShared', '==', true),
-          orderBy('year'),
-          orderBy('semester')
-        );
-        const sharedSnapshot = await getDocs(sharedQuery);
-
-        const subjectsData: Subject[] = [];
-
-        // Add department-specific subjects
-        deptSnapshot.forEach((doc) => {
-          const data = doc.data();
-          subjectsData.push({
-            id: doc.id,
-            name: data.name,
-            code: data.code,
-            departmentId: data.department,
-            year: data.year,
-            semester: data.semester,
-            credits: data.credits,
-            isShared: data.isShared || false,
-            description: data.description || '',
-            createdAt: data.createdAt?.toDate() || new Date()
+        if (department) {
+          // 1. Subjects for this department
+          const deptQuery = query(
+            subjectsRef,
+            where('department', '==', department)
+          );
+          const deptSnap = await getDocs(deptQuery);
+          deptSnap.forEach(doc => {
+            const d = doc.data();
+            subjectsData.push({
+              id: doc.id,
+              code: d.code,
+              name: d.name,
+              department: d.department,
+              year: d.year,
+              semester: d.semester,
+              credits: d.credits,
+              isShared: d.isShared,
+              sharedWith: d.sharedWith,
+              description: d.description,
+            });
           });
-        });
 
-        // Add shared subjects that include this department
-        sharedSnapshot.forEach((doc) => {
-          const data = doc.data();
-          const sharedWith = data.sharedWith || [];
-          
-          if (sharedWith.includes(department) || data.department === department) {
+          // 2. Shared subjects that include this department
+          const sharedQuery = query(
+            subjectsRef,
+            where('isShared', '==', true),
+            where('sharedWith', 'array-contains', department)
+          );
+          const sharedSnap = await getDocs(sharedQuery);
+          sharedSnap.forEach(doc => {
+            const d = doc.data();
             // Avoid duplicates
-            if (!subjectsData.find(s => s.code === data.code)) {
+            if (!subjectsData.find(s => s.code === d.code)) {
               subjectsData.push({
                 id: doc.id,
-                name: data.name,
-                code: data.code,
-                departmentId: data.department,
-                year: data.year,
-                semester: data.semester,
-                credits: data.credits,
-                isShared: data.isShared || false,
-                description: data.description || '',
-                createdAt: data.createdAt?.toDate() || new Date()
+                code: d.code,
+                name: d.name,
+                department: d.department,
+                year: d.year,
+                semester: d.semester,
+                credits: d.credits,
+                isShared: d.isShared,
+                sharedWith: d.sharedWith,
+                description: d.description,
               });
             }
-          }
-        });
-
-        // Filter by year if specified
-        let filteredSubjects = subjectsData;
-        if (year) {
-          filteredSubjects = subjectsData.filter(subject => subject.year === year);
+          });
+        } else {
+          // No department filter: fetch all
+          const allSnap = await getDocs(subjectsRef);
+          allSnap.forEach(doc => {
+            const d = doc.data();
+            subjectsData.push({
+              id: doc.id,
+              code: d.code,
+              name: d.name,
+              department: d.department,
+              year: d.year,
+              semester: d.semester,
+              credits: d.credits,
+              isShared: d.isShared,
+              sharedWith: d.sharedWith,
+              description: d.description,
+            });
+          });
         }
 
-        setSubjects(filteredSubjects);
-      } else {
-        // Get all subjects
-        const snapshot = await getDocs(subjectsQuery);
-        const subjectsData: Subject[] = [];
-
-        snapshot.forEach((doc) => {
-          const data = doc.data();
-          subjectsData.push({
-            id: doc.id,
-            name: data.name,
-            code: data.code,
-            departmentId: data.department,
-            year: data.year,
-            semester: data.semester,
-            credits: data.credits,
-            isShared: data.isShared || false,
-            description: data.description || '',
-            createdAt: data.createdAt?.toDate() || new Date()
-          });
-        });
+        // Sort by year, then semester, then name
+        subjectsData.sort((a, b) =>
+          a.year !== b.year
+            ? a.year - b.year
+            : a.semester !== b.semester
+            ? a.semester - b.semester
+            : a.name.localeCompare(b.name)
+        );
 
         setSubjects(subjectsData);
+      } catch (err: any) {
+        setError('Failed to fetch subjects');
+        setSubjects([]);
+      } finally {
+        setLoading(false);
       }
-    } catch (err) {
-      console.error('Error fetching subjects:', err);
-      setError('Failed to load subjects');
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
+    fetchSubjects();
+  }, [department]);
 
-  return { subjects, loading, error, refetch: fetchSubjects };
-};
+  return { subjects, loading, error };
+}

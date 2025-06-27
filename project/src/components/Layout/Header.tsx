@@ -2,9 +2,16 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { Bell, Search, LogOut } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { useNavigate } from 'react-router-dom';
 
 const Header: React.FC = () => {
   const { userProfile, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = async () => {
+    await logout();
+    navigate('/login');
+  };
 
   return (
     <motion.header
@@ -42,7 +49,7 @@ const Header: React.FC = () => {
         </div>
 
         <button
-          onClick={logout}
+          onClick={handleLogout}
           className="p-2 text-gray-600 hover:text-red-600 transition-colors"
           title="Logout"
         >
