@@ -2,3 +2,6 @@
 node_modules
 dist
 .vscode
+server/credentials.json
+server/temp-uploads
+server/.env
